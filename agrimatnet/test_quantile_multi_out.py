@@ -52,10 +52,45 @@ def build_target_history_indices(feature_names, target_names):
     return indices
 
 
+
+
+def inverse_transform_multioutput_preds(preds_array, scaler):
+    restored = np.asarray(preds_array, dtype=np.float32).copy()
+    if scaler is None or not scaler.has_target_stats():
+        return restored
+    if restored.ndim != 4:
+        raise ValueError(f"Shape predizioni non supportata: {restored.shape}")
+    for q_idx in range(restored.shape[-1]):
+        restored[..., q_idx] = scaler.inverse_transform_target(restored[..., q_idx])
+    return restored
+def inverse_transform_single_target_history(history_array, history_mask, scaler, target_idx):
+    restored = np.asarray(history_array, dtype=np.float32).copy()
+    mask = np.asarray(history_mask, dtype=bool)
+    valid = (~mask) & np.isfinite(restored)
+    if not valid.any() or scaler is None or not scaler.has_target_stats():
+        return restored
+
+    if scaler.mode in {"standardization", "standardization_arcsinh"}:
+        mean = float(np.asarray(scaler.target_mean, dtype=np.float32).reshape(-1)[target_idx])
+        var = float(np.asarray(scaler.target_var, dtype=np.float32).reshape(-1)[target_idx])
+        denom = math.sqrt(var + scaler.eps)
+        if scaler.mode == "standardization_arcsinh":
+            restored[valid] = np.sinh(restored[valid])
+        restored[valid] = restored[valid] * denom + mean
+    elif scaler.mode == "min-max":
+        min_val = float(np.asarray(scaler.target_min_value, dtype=np.float32).reshape(-1)[target_idx])
+        max_val = float(np.asarray(scaler.target_max_value, dtype=np.float32).reshape(-1)[target_idx])
+        rng = max(max_val - min_val, scaler.eps)
+        restored[valid] = restored[valid] * rng + min_val
+    else:
+        raise ValueError("Modalita` scaler non supportata.")
+
+    return restored
+
+
 @torch.no_grad()
-def evaluate(model, loader, device, quantiles, target_names, history_target_indices):
+def evaluate(model, loader, device, quantiles, target_names, history_target_indices, scaler=None):
     model.eval()
-    tau_tensor = torch.tensor(quantiles, device=device, dtype=torch.float32)
     median_idx = int(np.argmin([abs(q - 0.5) for q in quantiles]))
 
     metrics_by_target = {
@@ -95,40 +130,58 @@ def evaluate(model, loader, device, quantiles, target_names, history_target_indi
         targets_np = targets.detach().cpu().numpy()
         mask_np = mask.detach().cpu().numpy().astype(bool)
 
+        if scaler is not None and scaler.has_target_stats():
+            preds_np = inverse_transform_multioutput_preds(preds_np, scaler)
+            targets_np = scaler.inverse_transform_target(targets_np, mask_np)
+
+        history_target_np_by_name = {}
+        history_mask_np_by_name = {}
+        for target_name, history_idx in history_target_indices.items():
+            history_target_np = batch["history"][:, :, history_idx].detach().cpu().numpy()
+            history_mask_np = batch["history_mask"][:, :, history_idx].detach().cpu().numpy().astype(bool)
+            if scaler is not None and scaler.has_target_stats():
+                target_pos = target_names.index(target_name)
+                history_target_np = inverse_transform_single_target_history(
+                    history_target_np,
+                    history_mask_np,
+                    scaler,
+                    target_pos,
+                )
+            history_target_np_by_name[target_name] = history_target_np
+            history_mask_np_by_name[target_name] = history_mask_np
+
         for target_idx, target_name in enumerate(target_names):
-            target_preds = preds[..., target_idx, :]
-            target_targets = targets[..., target_idx]
-            target_mask = mask[..., target_idx]
-            keep = (~target_mask).unsqueeze(-1)
-            diff = target_targets.unsqueeze(-1) - target_preds
-
-            losses = []
-            for q_idx, tau in enumerate(quantiles):
-                diff_tau = diff[..., q_idx]
-                positive = (diff_tau >= 0).float()
-                loss_tau = torch.abs(diff_tau) * (tau * positive + (1 - tau) * (1 - positive))
-                loss_tau = loss_tau * keep[..., 0]
-                losses.append(loss_tau)
-
-            loss_stack = torch.stack(losses, dim=-1)
-            per_item_pinball = loss_stack.mean(dim=-1)
-            crps_per_item = 2 * torch.trapz(loss_stack, tau_tensor, dim=-1)
-
-            target_metrics = metrics_by_target[target_name]
-            batch_items = (~target_mask).sum().item()
-            target_metrics["total_items"] += batch_items
-            target_metrics["pinball_sum"] += per_item_pinball.sum().item()
-            target_metrics["pinball_sum_sq"] += (per_item_pinball ** 2).sum().item()
-            target_metrics["crps_sum"] += crps_per_item.sum().item()
-            target_metrics["crps_sum_sq"] += (crps_per_item ** 2).sum().item()
-
-            for q_idx in range(len(quantiles)):
-                target_metrics["per_q_sum"][q_idx] += losses[q_idx].sum().item()
-                target_metrics["per_q_sum_sq"][q_idx] += (losses[q_idx] ** 2).sum().item()
-
             target_preds_np = preds_np[:, :, target_idx, :]
             target_targets_np = targets_np[:, :, target_idx]
             target_mask_np = mask_np[:, :, target_idx]
+            valid = ~target_mask_np
+
+            diff = target_targets_np[:, :, None] - target_preds_np
+            keep = valid[:, :, None]
+
+            losses = []
+            for q_idx, tau in enumerate(quantiles):
+                diff_tau = diff[:, :, q_idx]
+                loss_tau = np.abs(diff_tau) * (tau * (diff_tau >= 0) + (1 - tau) * (diff_tau < 0))
+                loss_tau = loss_tau * keep[..., 0]
+                losses.append(loss_tau)
+
+            loss_stack = np.stack(losses, axis=-1)
+            per_item_pinball = loss_stack.mean(axis=-1)
+            crps_per_item = 2 * np.trapz(loss_stack, quantiles, axis=-1)
+
+            target_metrics = metrics_by_target[target_name]
+            batch_items = int(valid.sum())
+            target_metrics["total_items"] += batch_items
+            target_metrics["pinball_sum"] += float(per_item_pinball.sum())
+            target_metrics["pinball_sum_sq"] += float((per_item_pinball ** 2).sum())
+            target_metrics["crps_sum"] += float(crps_per_item.sum())
+            target_metrics["crps_sum_sq"] += float((crps_per_item ** 2).sum())
+
+            for q_idx in range(len(quantiles)):
+                target_metrics["per_q_sum"][q_idx] += float(losses[q_idx].sum())
+                target_metrics["per_q_sum_sq"][q_idx] += float((losses[q_idx] ** 2).sum())
+
             valid = ~target_mask_np
             lower = target_preds_np[..., 0]
             upper = target_preds_np[..., -1]
@@ -149,9 +202,8 @@ def evaluate(model, loader, device, quantiles, target_names, history_target_indi
                 target_metrics["abs_error_sum_sq"] += float((abs_errors ** 2).sum())
                 target_metrics["abs_target_sum"] += float(np.abs(tgt_masked).sum())
 
-            history_idx = history_target_indices[target_name]
-            history_target_np = batch["history"][:, :, history_idx].detach().cpu().numpy()
-            history_mask_np = batch["history_mask"][:, :, history_idx].detach().cpu().numpy().astype(bool)
+            history_target_np = history_target_np_by_name[target_name]
+            history_mask_np = history_mask_np_by_name[target_name]
             for sample_idx in range(target_targets_np.shape[0]):
                 keep_idx = valid[sample_idx]
                 target_vals = target_targets_np[sample_idx][keep_idx]
@@ -345,6 +397,7 @@ def main():
         quantiles,
         dataset.target_names,
         history_target_indices,
+        scaler=dataset.scaler if not args.no_scaling else None,
     )
 
     experiment_dir = Path(args.output_dir).resolve() if args.output_dir else Path(args.weights).resolve().parent

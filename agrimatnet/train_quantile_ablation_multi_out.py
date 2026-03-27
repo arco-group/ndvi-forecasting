@@ -15,7 +15,9 @@ from tqdm.auto import tqdm
 
 from dataset_builder.torch_dataset_multi_out import CacheTimeSeriesDatasetMultiOut
 from agrimatnet.train import str2bool, set_seed, move_to_device, masked_mse
-from agrimatnet.model_quantile_multi_out import AgriMatNetQuantile, quantile_loss
+from agrimatnet.model_quantile_multi_out import AgriMatNetQuantile
+from agrimatnet.model_quantile import quantile_loss
+
 
 # torch.cuda.set_per_process_memory_fraction(0.25, 0) 
 
@@ -192,11 +194,25 @@ def masked_time_weighted_mse(preds, targets, mask, delta_days, alpha):
     return ((preds - targets) ** 2 * weights).sum() / denom
 
 
-def train_epoch(model, loader, optimizer, device, quantiles, ablation_cfg, feature_idx, time_weight_alpha=None):
+def compute_target_quantile_losses(preds, targets, mask, quantiles, target_names, weights=None):
+    losses = {}
+    for idx, target_name in enumerate(target_names):
+        losses[target_name] = quantile_loss(
+            preds[:, :, idx, :],   # (B, T, Q)
+            targets[:, :, idx],     # (B, T)
+            mask[:, :, idx],        # (B, T)
+            quantiles,
+            weights=weights,        # (B, T)
+        )
+    return losses
+
+
+def train_epoch(model, loader, optimizer, device, quantiles, ablation_cfg, feature_idx, target_names, time_weight_alpha=None):
     model.train()
-    total_loss = 0.0
     total_mse = 0.0
     total_items = 0
+    total_loss_per_target = {name: 0.0 for name in target_names}
+    total_items_per_target = {name: 0.0 for name in target_names}
     progress = tqdm(loader, desc="Train", leave=False)
     for batch in progress:
         batch = move_to_device(batch, device)
@@ -209,7 +225,10 @@ def train_epoch(model, loader, optimizer, device, quantiles, ablation_cfg, featu
         if time_weight_alpha is not None:
             delta_days = batch["target_delta_days"]
             weights = 1.0 / (1.0 + time_weight_alpha * delta_days)
-        loss = quantile_loss(preds, targets, mask, quantiles, weights=weights)
+
+        loss_per_target = compute_target_quantile_losses(preds, targets, mask, quantiles, target_names, weights=weights)
+        loss = torch.stack(list(loss_per_target.values())).sum()
+
         median_idx = len(quantiles) // 2
         if time_weight_alpha is not None:
             mse = masked_time_weighted_mse(
@@ -230,20 +249,35 @@ def train_epoch(model, loader, optimizer, device, quantiles, ablation_cfg, featu
             batch_items = ((~mask).float() * weights.unsqueeze(-1)).sum().item()
         else:
             batch_items = (~mask).sum().item()
-        total_loss += loss.item() * batch_items
         total_mse += mse.item() * batch_items
         total_items += batch_items
+
+        for idx, target_name in enumerate(target_names):
+            target_mask = mask[..., idx]
+            if weights is not None:
+                target_items = ((~target_mask).float() * weights).sum().item()
+            else:
+                target_items = (~target_mask).sum().item()
+            total_loss_per_target[target_name] += loss_per_target[target_name].item() * target_items
+            total_items_per_target[target_name] += target_items
+
         progress.set_postfix({"loss": loss.item(), "mse": mse.item()})
-    denom = max(total_items, 1)
-    return (total_loss / denom, total_mse / denom)
+
+    mse_denom = max(total_items, 1)
+    avg_loss_per_target = {}
+    for target_name in target_names:
+        target_denom = max(total_items_per_target[target_name], 1.0)
+        avg_loss_per_target[target_name] = total_loss_per_target[target_name] / target_denom
+    total_loss = sum(avg_loss_per_target.values())
+    return (total_loss, total_mse / mse_denom, avg_loss_per_target)
 
 
 @torch.no_grad()
 def evaluate(model, loader, device, quantiles, ablation_cfg, feature_idx, target_names, time_weight_alpha=None):
     model.eval()
-    total_loss = 0.0
     total_mse = 0.0
     total_items = 0
+    total_loss_per_target = {name: 0.0 for name in target_names}
     total_mse_per_target = {name: 0.0 for name in target_names}
     total_items_per_target = {name: 0.0 for name in target_names}
     progress = tqdm(loader, desc="Validate", leave=False)
@@ -258,7 +292,10 @@ def evaluate(model, loader, device, quantiles, ablation_cfg, feature_idx, target
         if time_weight_alpha is not None:
             delta_days = batch["target_delta_days"]
             weights = 1.0 / (1.0 + time_weight_alpha * delta_days)
-        loss = quantile_loss(preds, targets, mask, quantiles, weights=weights)
+
+        loss_per_target = compute_target_quantile_losses(preds, targets, mask, quantiles, target_names, weights=weights)
+        loss = torch.stack(list(loss_per_target.values())).sum()
+
         median_idx = len(quantiles) // 2
         if time_weight_alpha is not None:
             mse = masked_time_weighted_mse(
@@ -275,7 +312,6 @@ def evaluate(model, loader, device, quantiles, ablation_cfg, feature_idx, target
             batch_items = ((~mask).float() * weights.unsqueeze(-1)).sum().item()
         else:
             batch_items = (~mask).sum().item()
-        total_loss += loss.item() * batch_items
         total_mse += mse.item() * batch_items
         total_items += batch_items
 
@@ -296,16 +332,21 @@ def evaluate(model, loader, device, quantiles, ablation_cfg, feature_idx, target
             else:
                 target_mse = masked_mse(target_preds, target_vals, target_mask)
                 target_items = (~target_mask).sum().item()
+            total_loss_per_target[target_name] += loss_per_target[target_name].item() * target_items
             total_mse_per_target[target_name] += target_mse.item() * target_items
             total_items_per_target[target_name] += target_items
 
         progress.set_postfix({"loss": loss.item(), "mse": mse.item()})
-    denom = max(total_items, 1)
+
+    mse_denom = max(total_items, 1)
+    avg_loss_per_target = {}
     mse_per_target = {}
     for target_name in target_names:
         target_denom = max(total_items_per_target[target_name], 1.0)
+        avg_loss_per_target[target_name] = total_loss_per_target[target_name] / target_denom
         mse_per_target[target_name] = total_mse_per_target[target_name] / target_denom
-    return (total_loss / denom, total_mse / denom, mse_per_target)
+    total_loss = sum(avg_loss_per_target.values())
+    return (total_loss, total_mse / mse_denom, avg_loss_per_target, mse_per_target)
 
 
 def parse_args():
@@ -557,7 +598,7 @@ def main():
         print(f"Checkpoint {resume_path} non trovato, training da zero.")
 
     for epoch in range(start_epoch, args.epochs + 1):
-        train_loss, train_mse = train_epoch(
+        train_loss, train_mse, train_loss_per_target = train_epoch(
             model,
             train_loader,
             optimizer,
@@ -565,9 +606,10 @@ def main():
             args.quantiles,
             ablation_cfg,
             feature_idx,
+            dataset.target_names,
             time_weight_alpha=time_weight_alpha,
         )
-        val_loss, val_mse, val_mse_per_target = evaluate(
+        val_loss, val_mse, val_loss_per_target, val_mse_per_target = evaluate(
             model,
             val_loader,
             device,
@@ -577,13 +619,17 @@ def main():
             dataset.target_names,
             time_weight_alpha=time_weight_alpha,
         )
-        per_target_log = " | ".join(
+        per_target_loss_log = " | ".join(
+            f"val_pinball_{name}={value:.6f}" for name, value in val_loss_per_target.items()
+        )
+        per_target_mse_log = " | ".join(
             f"val_mse_{name}={value:.6f}" for name, value in val_mse_per_target.items()
         )
         print(
             f"Epoch {epoch:02d} | train_pinball={train_loss:.6f} | val_pinball={val_loss:.6f} "
             f"| train_mse={train_mse:.6f} | val_mse={val_mse:.6f}"
-            + (f" | {per_target_log}" if per_target_log else "")
+            + (f" | {per_target_loss_log}" if per_target_loss_log else "")
+            + (f" | {per_target_mse_log}" if per_target_mse_log else "")
         )
         history_entry = {
             "epoch": epoch,
@@ -592,6 +638,10 @@ def main():
             "train_mse": float(train_mse),
             "val_mse": float(val_mse),
         }
+        for target_name, value in train_loss_per_target.items():
+            history_entry[f"train_pinball_{target_name}"] = float(value)
+        for target_name, value in val_loss_per_target.items():
+            history_entry[f"val_pinball_{target_name}"] = float(value)
         for target_name, value in val_mse_per_target.items():
             history_entry[f"val_mse_{target_name}"] = float(value)
         val_history.append(history_entry)
@@ -628,6 +678,8 @@ def main():
     torch.save(model.state_dict(), final_weights)
     history_path = output_dir / "val_losses.csv"
     header = ["epoch", "train_pinball", "val_pinball", "train_mse", "val_mse"]
+    header.extend([f"train_pinball_{name}" for name in dataset.target_names])
+    header.extend([f"val_pinball_{name}" for name in dataset.target_names])
     header.extend([f"val_mse_{name}" for name in dataset.target_names])
     with history_path.open("w", encoding="utf-8", newline="") as fp:
         writer = csv.writer(fp)
@@ -640,6 +692,8 @@ def main():
                 entry["train_mse"],
                 entry["val_mse"],
             ]
+            row.extend([entry.get(f"train_pinball_{name}", float("nan")) for name in dataset.target_names])
+            row.extend([entry.get(f"val_pinball_{name}", float("nan")) for name in dataset.target_names])
             row.extend([entry.get(f"val_mse_{name}", float("nan")) for name in dataset.target_names])
             writer.writerow(row)
 

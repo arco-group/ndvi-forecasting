@@ -58,13 +58,19 @@ class AgriMatNetQuantile(nn.Module):
         self.future_pos = PositionalEncoding(d_model=d_model, dropout=dropout)
 
         fusion_dim = d_model * 2
-        self.head = nn.Sequential(
-        nn.Dropout(dropout),
-        nn.Linear(fusion_dim, d_model),
-        nn.ReLU(),
-        nn.Dropout(dropout),
-        nn.Linear(d_model, self.num_targets * len(self.quantiles)),  #Unica differenza rispetto al modello puntuale adesso la testa da un numero di neuroni pari al numero di quantili * k dove k sono gli indici da predirre
+        self.heads = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Dropout(dropout),
+                    nn.Linear(fusion_dim, d_model),
+                    nn.ReLU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(d_model, len(self.quantiles)),
+                )
+                for _ in range(self.num_targets)
+            ]
         )
+    
 
 
     @staticmethod
@@ -111,9 +117,11 @@ class AgriMatNetQuantile(nn.Module):
 
         history_context = history_summary.unsqueeze(1).expand(-1, forecast_window, -1)
         fusion = torch.cat([selected_future, history_context], dim=-1)
-        preds = self.head(fusion) #(B, T, K, Q)
-        preds = preds.view(B, forecast_window, self.num_targets, len(self.quantiles))
+        preds_per_target = [head(fusion) for head in self.heads] #(B, T, Q) per ogni K
+        preds = torch.stack(preds_per_target, dim=2)
+
         return preds
+
 
 
 
