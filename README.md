@@ -24,8 +24,7 @@
 <br/>
 
 <p align="center">
-  <b>Code availability:</b> the code will be publicly released once the paper is accepted.
-</p>
+s
 
 ## Contact
 For questions and comments, feel free to contact me: irene.iele@unicampus.it
