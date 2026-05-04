@@ -24,7 +24,6 @@
 <br/>
 
 <p align="center">
-s
 
 ## Contact
 For questions and comments, feel free to contact me: irene.iele@unicampus.it
