@@ -13,8 +13,8 @@ from .cache_builder_unified import DatasetCacheBuilder
 
 class MonthlyNoiseCacheBuilder(DatasetCacheBuilder):
     """
-    Cache builder con rumore meteo basato su std mensile (area, con fallback globale)
-    e crescita lineare con il lead time reale (giorni).
+    Cache builder with weather noise based on monthly std (area-level, with global fallback)
+    and linear growth with the real lead time (days).
     """
 
     def __init__(
@@ -38,8 +38,8 @@ class MonthlyNoiseCacheBuilder(DatasetCacheBuilder):
 
     def compute_monthly_stats(self):
         """
-        Calcola la std mensile per le feature meteo.
-        Se l'area non ha abbastanza campioni nel mese, si usa il fallback globale.
+        Compute the monthly std for weather features.
+        If an area does not have enough samples in a month, fall back to the global stats.
         """
         groups = self.collect_groups()
         if not groups:
@@ -185,7 +185,7 @@ class MonthlyNoiseCacheBuilder(DatasetCacheBuilder):
 
     def process_area(self, area_name, csv_files):
         """
-        Costruisce i campioni per una singola area, salva cache npz + metadata json.
+        Build samples for a single area and save the npz cache plus metadata JSON.
         """
         samples_history = []
         samples_history_mask = []

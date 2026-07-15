@@ -1,12 +1,27 @@
 import torch
 import torch.nn as nn
+from huggingface_hub import PyTorchModelHubMixin
 
 from .layers import PositionalEncoding
 
 
-class AgriMatNetQuantile(nn.Module):
+class AgriMatNetQuantile(
+    nn.Module,
+    PyTorchModelHubMixin,
+    repo_url="https://github.com/arco-group/ndvi-forecasting",
+    license="mit",
+    tags=[
+        "time-series",
+        "forecasting",
+        "remote-sensing",
+        "agriculture",
+        "ndvi",
+        "probabilistic-forecasting",
+        "pytorch",
+    ],
+    ):
     """
-    Variante quantile di AgriMatNet: produce un vettore di quantili per ciascun timestep futuro.
+    Quantile variant of AgriMatNet: produces a vector of quantiles for each future timestep.
     """
 
     def __init__(
@@ -58,7 +73,7 @@ class AgriMatNetQuantile(nn.Module):
             nn.Linear(fusion_dim, d_model),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, len(self.quantiles)), # Unica differenza rispetto al modello puntuale adesso la testa da un numero di neuroni pari al numero di quantili 
+            nn.Linear(d_model, len(self.quantiles)),  # The only difference from the point model is that the head now has one neuron per quantile.
         )
 
     @staticmethod
@@ -111,17 +126,17 @@ class AgriMatNetQuantile(nn.Module):
 
 def quantile_loss(preds, targets, mask, quantiles, weights=None):
     """
-    Calcola la pinball loss su una batteria di quantili.
+    Compute the pinball loss over a set of quantiles.
     preds: (B, T, Q)
     targets: (B, T)
-    mask: (B, T) True sui valori da ignorare
-    quantiles: lista di quantili in (0,1)
-    weights: opzionale (B, T) con pesi non negativi applicati prima del masking
+    mask: (B, T) True for values to ignore
+    quantiles: list of quantiles in (0,1)
+    weights: optional (B, T) tensor with non-negative weights applied before masking
     """
     if preds.size(-1) != len(quantiles):
         raise ValueError("Dimensione finale di preds incoerente con il numero di quantili.")
 
-    keep = ~mask  # mask True per i NaN → li ignoriamo
+    keep = ~mask  # mask=True for NaNs, so ignore them
     weight_tensor = keep.float()
     if weights is not None:
         if weights.shape != keep.shape:

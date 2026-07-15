@@ -12,8 +12,8 @@ from .scaler import Scaler
 
 class CacheTimeSeriesDataset(Dataset):
     """
-    Dataset PyTorch che legge le cache prodotte dal DatasetCacheBuilder e restituisce
-    finestre a lunghezza variabile basate sul numero di passaggi Sentinel desiderati.
+    PyTorch dataset that reads the caches produced by DatasetCacheBuilder and returns
+    variable-length windows based on the desired number of Sentinel steps.
     """
 
     def __init__(
@@ -212,7 +212,7 @@ class CacheTimeSeriesDataset(Dataset):
     def _between_targets_stats(sequence, rain_idx, temp_idx, boundaries):
         """
         sequence: np.ndarray [T, F]
-        boundaries: lista di indici target (ordinati) a cui assegnare il valore calcolato
+        boundaries: ordered list of target indices where the computed value is assigned
         """
         T = sequence.shape[0]
         rain_feat = np.full((T,), np.nan, dtype=np.float32)
@@ -263,9 +263,9 @@ class CacheTimeSeriesDataset(Dataset):
         feature_names,
     ):
         rain_idx, temp_idx, target_idx = self._get_feature_indices(feature_names)
-        #if rain_idx is None or temp_idx is None or target_idx is None:
-        #    print("Feature engineering disattivato: rainfall/avg_temperature/target non trovati.")
-        #    return history_sequences, history_masks, future_sequences, future_masks, feature_names
+        # if rain_idx is None or temp_idx is None or target_idx is None:
+        #     print("Feature engineering disabled: rainfall/avg_temperature/target not found.")
+        #     return history_sequences, history_masks, future_sequences, future_masks, feature_names
         """
         new_feature_names = [
             "rain_cum_between_targets",
@@ -300,7 +300,7 @@ class CacheTimeSeriesDataset(Dataset):
             ).astype(np.float32)
             return engineered
 
-        # Boundaries: per la history consideriamo solo gli indici dove il target storico è definito (mask False)
+        # Boundaries: for history, consider only the indices where the historical target is defined (mask False).
         history_bounds = []
         for seq, mask in zip(history_sequences, history_masks):
             valid_idx = [i for i in range(len(seq)) if i < mask.shape[0] and not mask[i, target_idx]]
@@ -311,7 +311,7 @@ class CacheTimeSeriesDataset(Dataset):
         updated_history_mask = []
         updated_future_seq = []
         updated_future_mask = []
-        # stats per le feature ingegnerizzate: sum, sumsq, min, max, count
+        # Statistics for engineered features: sum, sumsq, min, max, count.
         stats_sum = np.zeros(len(new_feature_names), dtype=np.float64)
         stats_sumsq = np.zeros(len(new_feature_names), dtype=np.float64)
         stats_min = np.full(len(new_feature_names), np.inf, dtype=np.float64)
@@ -334,7 +334,7 @@ class CacheTimeSeriesDataset(Dataset):
             desc="Feature engineering",
             leave=False,
         ):
-            # History engineered
+            # History engineered features.
             eng_h = build_engineered(seq_h, ts_h, bounds_h)
             new_seq_h = np.concatenate([seq_h[:, :target_idx], eng_h, seq_h[:, target_idx:target_idx + 1]], axis=1)
             new_mask_cols_h = np.isnan(eng_h)
@@ -344,7 +344,7 @@ class CacheTimeSeriesDataset(Dataset):
             updated_history_seq.append(new_seq_h)
             updated_history_mask.append(new_mask_h)
 
-            # Combine history+future for rolling/between-target that guardano indietro
+            # Combine history + future for rolling/between-target features that look backward.
             combined_seq = np.concatenate([seq_h, seq_f], axis=0)
             combined_ts = np.concatenate([np.array(ts_h, dtype="datetime64[ns]"), np.array(ts_f, dtype="datetime64[ns]")])
             combined_bounds = bounds_h + [len(seq_h) + b for b in bounds_f]
@@ -359,7 +359,7 @@ class CacheTimeSeriesDataset(Dataset):
             updated_future_seq.append(new_seq_f)
             updated_future_mask.append(new_mask_f)
 
-            # aggiorna statistiche sulle feature ingegnerizzate (history + future), colonna per colonna
+            # Update statistics for engineered features (history + future), column by column.
             for j in range(len(new_feature_names)):
                 for eng_block in (eng_h, eng_f):
                     col = eng_block[:, j]
@@ -423,11 +423,11 @@ class CacheTimeSeriesDataset(Dataset):
             mask_col = mask[:, target_idx].copy()
             history_classes.append(self._discretize_array(vals, mask_col))
             history_class_masks.append(mask_col)
-            # maschera il target continuo e azzera la colonna per non usarla come feature
+            # Mask the continuous target and zero out the column so it is not used as a feature.
             seq[:, target_idx] = 0.0
             mask[:, target_idx] = True
 
-        # maschera e azzera anche nel future
+        # Mask and zero it out in the future as well.
         for seq, mask in zip(future_sequences, future_masks):
             if target_idx < seq.shape[1]:
                 seq[:, target_idx] = 0.0
@@ -442,14 +442,14 @@ class CacheTimeSeriesDataset(Dataset):
         self.scaler = Scaler.load(self.scaler_path)
 
     def extend_scaler_with_engineered(self, engineered_stats):
-        # Estende mean/var/min/max inserendo le feature ingegnerizzate prima del target
+        # Extend mean/var/min/max by inserting the engineered features before the target.
         if self.scaler is None or engineered_stats is None:
             return
         insert_len = len(engineered_stats["mean"])
         if insert_len == 0:
             return
         if self.scaler.mode in {"standardization", "standardization_arcsinh"}:
-            base_len = len(self.scaler.mean) - 1  # esclude il target
+            base_len = len(self.scaler.mean) - 1  # Exclude the target.
             mean_ext = np.concatenate(
                 [self.scaler.mean[:base_len], engineered_stats["mean"], self.scaler.mean[base_len:]]
             )

@@ -1,5 +1,5 @@
 """
-Training script probabilistico per AgriMatNet basato su quantili.
+Probabilistic training script for AgriMatNet based on quantiles.
 """
 import csv
 import sys
@@ -17,7 +17,7 @@ from dataset_builder.torch_dataset import CacheTimeSeriesDataset
 from agrimatnet.train_utils import str2bool, set_seed, move_to_device, masked_mse
 from agrimatnet.model_quantile import AgriMatNetQuantile, quantile_loss
 
-# torch.cuda.set_per_process_memory_fraction(0.25, 0) 
+# torch.cuda.set_per_process_memory_fraction(0.25, 0)
 
 
 def parse_quantiles(value):
@@ -47,7 +47,7 @@ def parse_quantiles(value):
 
 def collate_variable(batch):
     """
-    Padding delle sequenze e costruzione maschere per Transformer, includendo i delta_days per pesare le loss.
+    Pad sequences and build Transformer masks, including delta_days to weight the losses.
     """
     list_keys = {
         "history_timestamps",
@@ -85,7 +85,7 @@ def collate_variable(batch):
         future_mask = item["future_mask"]
         future_noise = item["future_noise"]
 
-        # calcoliamo la differenza tra l'ultimo history_timestamps e i 5 target_timestamps da predirre, questo servirà per pesare l'mse
+        # Compute the gap between the last history_timestamps value and the 5 target_timestamps to predict; this is used to weight the MSE.
         history_end = np.datetime64(item["history_timestamps"][-1])
         target_ts = np.array(item["target_timestamps"], dtype="datetime64[ns]")
         delta_days = (target_ts - history_end).astype("timedelta64[D]").astype(np.float32)
@@ -129,10 +129,10 @@ def collate_variable(batch):
 
     return collated
 
-# funzioni aggiunte per l'ablation study:
+# Additional functions for the ablation study:
 
 def mask_columns(tensor, mask, indices):
-    # indices è la lista di colonne da spegnere (covariate o target storico) su cui mask_columns imposta i valori a 0 e la maschera a True.
+    # indices is the list of columns to disable (covariates or historical target); mask_columns sets them to 0 and marks them as True.
     if not indices:
         return
     tensor[..., indices] = 0.0
@@ -141,9 +141,9 @@ def mask_columns(tensor, mask, indices):
 
 def apply_ablation(batch, ablation_cfg, feature_idx):
     """
-    Spegne selettivamente covariate future, covariate storiche e target storico.
+    Selectively disables future covariates, historical covariates, and the historical target.
     """
-    cov_idxs = feature_idx["covariates"] # Indice che fa riferimento a tutte le covariate da spegnere
+    cov_idxs = feature_idx["covariates"]  # Index referring to all covariates to disable.
     def safe_mask(tensor, mask_tensor):
         feat_dim = tensor.shape[-1]
         bad = [i for i in cov_idxs if i >= feat_dim or i < -feat_dim]
@@ -155,7 +155,7 @@ def apply_ablation(batch, ablation_cfg, feature_idx):
         safe_mask(batch["future"], batch["future_mask"])
         if "future_noise" in batch:
             noise_dim = batch["future_noise"].shape[-1]
-            noise_cov_idxs = [i for i in cov_idxs if -noise_dim <= i < noise_dim] # Solo al rumore
+            noise_cov_idxs = [i for i in cov_idxs if -noise_dim <= i < noise_dim]  # Noise only.
             batch["future_noise"][..., noise_cov_idxs] = 0.0
 
     if ablation_cfg["history_covariates_off"]:
@@ -172,7 +172,7 @@ def apply_ablation(batch, ablation_cfg, feature_idx):
 
 def build_feature_index(feature_names):
     """
-    Ricava gli indici di colonna per covariate e target storico a partire dal metadata cache.
+    Derive the column indices for covariates and the historical target from the cache metadata.
     """
     if not feature_names:
         raise ValueError("feature_names mancante dal dataset.")
@@ -180,7 +180,7 @@ def build_feature_index(feature_names):
     covariate_indices = list(range(target_history_idx))
     return {"target_history": target_history_idx, "covariates": covariate_indices}
 
-# fine aggiunta funzioni l'ablation study
+# End of the ablation study helper functions
 
 
 def masked_time_weighted_mse(preds, targets, mask, delta_days, alpha):

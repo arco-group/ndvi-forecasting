@@ -4,8 +4,8 @@ import numpy as np
 
 class Scaler:
     """
-    Replica della logica di MATNet: consente standardizzazione o min-max sui dati.
-    I valori NaN vengono ignorati nel calcolo delle statistiche.
+    Replica of MATNet's logic: supports standardization or min-max scaling on the data.
+    NaN values are ignored when computing statistics.
     """
 
     def __init__(self, mode="min-max", eps=1e-5):
@@ -15,7 +15,7 @@ class Scaler:
         self.var = None
         self.min_value = None
         self.max_value = None
-        # Optional stats for target scaling (kept separate from feature stats).
+        # Optional stats for target scaling, kept separate from feature stats.
         self.target_mean = None
         self.target_var = None
         self.target_min_value = None
@@ -31,8 +31,8 @@ class Scaler:
 
     def fit(self, array):
         """
-        Calcola le statistiche globali su un array 2D (campioni, feature).
-        I NaN vengono ignorati sfruttando le funzioni di numpy che li gestiscono.
+        Compute global statistics on a 2D array (samples, features).
+        NaNs are ignored using NumPy's NaN-aware functions.
         """
         if self.mode in {"standardization", "standardization_arcsinh"}:
             self.mean = np.nanmean(array, axis=0)
@@ -45,7 +45,7 @@ class Scaler:
 
     def transform(self, array):
         """
-        Applica la trasformazione alle feature mantenendo i NaN inalterati.
+        Apply the transformation to features while leaving NaNs unchanged.
         """
         transformed = array.copy()
         if self.mode == "standardization":
@@ -114,7 +114,7 @@ class Scaler:
 
     def to_dict(self):
         """
-        Serializza i parametri per salvarli su disco in un formato leggibile (json).
+        Serialize the parameters to disk in a human-readable format (JSON).
         """
         return {
             "mode": self.mode,

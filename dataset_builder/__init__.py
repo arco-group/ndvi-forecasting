@@ -1,6 +1,6 @@
 """
-Strumenti per preparare e ispezionare i dataset delle serie temporali vegetative.
-Le funzioni seguono lo stile di MATNet ma sono adattate al contesto agricolo.
+Tools for preparing and inspecting vegetation time-series datasets.
+The functions follow the MATNet style but are adapted to the agricultural context.
 """
 
 from .cache_builder_unified import DatasetCacheBuilder, build_default_cache
