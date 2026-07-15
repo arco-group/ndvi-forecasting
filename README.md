@@ -33,11 +33,6 @@ Public release of the code for NDVI forecasting using satellite time series and 
 ## Contact
 For questions and comments, feel free to contact me: irene.iele@unicampus.it
 
-## Pretrained Model
-
-The current Hugging Face export is the one stored in `agrimatnet-hf/`.
-The older `hf_model/` snapshot is deprecated and should not be used.
-
 ### Architecture
 
 The released checkpoint uses:
