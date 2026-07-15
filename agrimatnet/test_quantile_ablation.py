@@ -3,8 +3,8 @@
 
 
 """
-Script di test per il modello quantile di AgriMatNet.
-Calcola la pinball loss media e altri indicatori, salvando anche un grafico delle bande di quantile.
+Test script for the AgriMatNet quantile model.
+Computes the average pinball loss and other metrics, and also saves a plot of the quantile bands.
 """
 import csv
 import sys
@@ -28,7 +28,7 @@ from agrimatnet.train_utils import move_to_device, str2bool
 from agrimatnet.model_quantile import AgriMatNetQuantile
 from agrimatnet.train_quantile_ablation import collate_variable, parse_quantiles
 
-# funzioni di ablation
+# Ablation functions
 def mask_columns(tensor, mask, indices):
     if not indices:
         return
@@ -137,7 +137,7 @@ def evaluate(model, loader, device, quantiles, ablation_cfg, feature_idx, scaler
         coverage_hits += within_band.sum()
         coverage_total += valid.sum()
 
-        # metriche puntuali sul q=0.5
+        # Point metrics for q=0.5
         diff_med = preds_median - targets_np
         diff_med_masked = diff_med[valid]
         tgt_masked = targets_np[valid]
@@ -150,7 +150,7 @@ def evaluate(model, loader, device, quantiles, ablation_cfg, feature_idx, scaler
             total_abs_error_sq += float((abs_errors ** 2).sum())
             total_abs_target += float(np.abs(tgt_masked).sum())
 
-        # naive: ultimo valore valido della history
+        # Naive baseline: last valid value from history
         for idx in range(batch_size := preds_np.shape[0]):
             keep = valid[idx]
             target_vals = targets_np[idx][keep]
